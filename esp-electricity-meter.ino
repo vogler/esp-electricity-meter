@@ -7,8 +7,20 @@
 #include <ESP8266WiFi.h>
 #include <ESP8266mDNS.h>
 #include <WiFiUdp.h>
-#include <ArduinoOTA.h>
+#include <ArduinoOTA.h> // https://github.com/jandrassy/ArduinoOTA
 // alternative (upload of .bin via webpage): https://github.com/ayushsharma82/ElegantOTA
+
+// MQTT
+#include <PubSubClient.h> // https://github.com/knolleary/pubsubclient
+WiFiClient wifi;
+PubSubClient mqtt(wifi);
+// json
+char buf[200];
+#define json(s, ...) (sprintf(buf, "{ " s " }", __VA_ARGS__), buf)
+
+#define MQTT_TOPIC "electricity"
+#define MQTT_SERVER "rpi0"
+#define MQTT_PORT   1883
 
 #define NAME "esp-electricity-meter"
 // #define DIFF 10 // sensor value difference in percent to trigger
@@ -62,6 +74,34 @@ void setup_OTA() {
   ArduinoOTA.begin();
 }
 
+char clientId[32];
+
+void mqtt_connect(){
+  while (!mqtt.connected()) {
+    snprintf(clientId, sizeof(clientId), "ElectricityMeter-%04x", random(0xffff)); // 4 chars for hex id
+    Serial.printf("Connect MQTT to %s as %s ... ", MQTT_SERVER, clientId);
+    if (mqtt.connect(clientId)) {
+      Serial.printf("connected to mqtt://%s\n", MQTT_SERVER);
+      mqtt.publish(MQTT_TOPIC "/status", json("\"millis\": %lu, \"event\": \"connect\", \"clientId\": \"%s\"", millis(), clientId)); // TODO millis() is really just the ms, not full unix timestamp!
+      // mqtt.subscribe("");
+    } else {
+      Serial.printf("failed, rc=%d. retry in 5s.\n", mqtt.state());
+      delay(5000);
+    }
+  }
+}
+
+void mqtt_callback(char* topic, byte* payload, unsigned int length) {
+  Serial.printf("MQTT message on topic %s\n", topic);
+}
+
+void setup_mqtt() {
+  mqtt.setServer(MQTT_SERVER, MQTT_PORT);
+  mqtt.setCallback(mqtt_callback);
+  randomSeed(micros());
+  mqtt_connect();
+}
+
 int pre; // previous sensor value
 
 void setup () {
@@ -85,10 +125,12 @@ void setup () {
 
   setup_OTA();
 
+  setup_mqtt();
+
   pre = analogRead(A0); // set initial value to not trigger a change on first loop()
 }
 
-double count = 138214.8;
+double count = 138215.3;
 unsigned long lastHigh;
 unsigned long lastLow;
 unsigned long lastPulse;
@@ -106,13 +148,14 @@ void loop () {
     // Serial.println((float) (cur-pre) / pre * 100);
   // }
   if (cur > THRESH) {
-    lastHigh = millis();
-    if (pre <= THRESH) {
+    if (pre <= THRESH && (millis()-lastPulse)/1000 >= TIMEOUT) {
       Serial.print("Pulse!\t");
       count += 1.0/RPU;
       Serial.println(count);
       lastPulse = millis();
+      mqtt.publish(MQTT_TOPIC "/pulse", json("\"millis\": %lu, \"count\": %lf", lastPulse, count));
     }
+    lastHigh = millis();
   } else {
     lastLow = millis();
   }
