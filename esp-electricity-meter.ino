@@ -123,6 +123,10 @@ void setup () {
     Serial.println(WiFi.localIP());
   }
 
+  // ESP often lost wifi connection and didn't reconnect
+  WiFi.setAutoReconnect(true);
+  WiFi.persistent(true);
+
   setup_OTA();
 
   setup_mqtt();
